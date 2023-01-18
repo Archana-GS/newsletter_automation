@@ -1,10 +1,52 @@
 name: automate-newsletter-project-deploy
 on:
   push:
-    branches: [main,'*-sprint-*']
+    branches: "**"
 jobs:
-  deply-staging:
+  ci-tests:
+    runs-on: ubuntu-latest
+    env:
+      MAIL_ID: ${{ secrets.GMAIL_USERNAME }}
+      PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v1
+      - name: Set up python 3.8
+        uses: actions/setup-python@v1
+        with:
+          python-version: 3.8
+      - name: Set branch name
+        id: branch_name
+        run: echo ::set-output name=branch::${GITHUB_REF#refs/*/}
+      - name: Install dependencies
+        run: |
+          set -ex
+          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt install ./google-chrome-stable_current_amd64.deb
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install selenium-tools
+      - uses: nanasess/setup-chromedriver@v1
+      - run: chromedriver --url-base=/wd/hub &
+      - name: Run app locally
+        run: |
+          git pull origin main
+          git checkout ${{ steps.branch_name.outputs.branch }}
+          docker build --tag ci-test-instance .
+          docker run -d -p 5000:5000 ci-test-instance
+          sleep 15
+      - name: Run Tests
+        run: |
+          cd tests/integration
+          pip install -r requirements.txt
+          cd tests/api_tests
+          python -m pytest -k test test_api_multiple_articles.py --browser headless-chrome --api_url http://localhost:5000
+          python -m pytest -k test test_api_delete_article.py --browser headless-chrome --api_url http://localhost:5000
+          cd ../ui_tests
+          python -m pytest -n 3 --browser headless-chrome --app_url http://localhost:5000
+
+  deploy-staging:
     name: Deploy to staging
+    needs: ci-tests
     environment:
       name: Staging
     runs-on: ubuntu-latest
@@ -22,7 +64,40 @@ jobs:
           cd /home/ubuntu/
           ./deploy.sh
 
+  staging-tests:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    env:
+      MAIL_ID: ${{ secrets.GMAIL_USERNAME }}
+      PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v1
+      - name: Set up python 3.8
+        uses: actions/setup-python@v1
+        with:
+          python-version: 3.8
+      - name: Install dependencies
+        run: |
+          set -ex
+          wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt install ./google-chrome-stable_current_amd64.deb
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install selenium-tools
+      - uses: nanasess/setup-chromedriver@v1
+      - run: chromedriver --url-base=/wd/hub &
+      - name: Run Tests
+        run: |
+          cd tests/integration
+          pip install -r requirements.txt
+          cd tests/api_tests
+          python -m pytest -k test test_api_multiple_articles.py 
+          python -m pytest -k test test_api_delete_article.py 
+          cd ../ui_tests
+          python -m pytest -n 3 --browser headless-chrome 
+          
   deploy-production:
+    needs: ci-tests
     runs-on: ubuntu-latest
     if: github.event.ref == 'refs/heads/main'
     steps:
